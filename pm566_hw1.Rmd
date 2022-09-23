@@ -1,0 +1,304 @@
+---
+title: "PM566 HW1"
+author: "Echo Tang"
+date: "2022-09-13"
+output: 
+  html_document: 
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Step 1: Downloading data
+```{r, message=FALSE}
+library(data.table)
+library(tidyverse)
+epa_2004 = fread("epa_2004.csv")
+epa_2019 = fread("epa_2019.csv")
+```
+
+Now we can check the dimensions of each dataset. 
+
+```{r}
+# Check dimensions
+dim(epa_2004) 
+# 19233 rows, 20 columns
+dim(epa_2019)
+# 53156 rows, 20 columns
+```
+
+The 2004 dataset has 19233 rows and 20 columns, whereas the 2019 dataset has 53156 rows and 20 columns.  
+
+```{r}
+# Check headers and footers
+head(epa_2004)
+head(epa_2019)
+tail(epa_2004)
+tail(epa_2019)
+
+# Check variable names
+colnames(epa_2004)
+colnames(epa_2019)
+```
+
+The column names, or variables, for both datasets are the same and are of the same data type.
+
+```{r}
+# Check variable types
+str(epa_2004)
+str(epa_2019)
+
+summary(epa_2004)
+summary(epa_2019)
+```
+
+We can then check variables of interest. To answer our question, this would be the daily mean PM2.5 concentration. 
+```{r}
+# Check variable of interest - daily mean PM2.5 concentration
+table(epa_2004$`Daily Mean PM2.5 Concentration`)
+summary(epa_2004$`Daily Mean PM2.5 Concentration`)
+
+table(epa_2019$`Daily Mean PM2.5 Concentration`)
+summary(epa_2019$`Daily Mean PM2.5 Concentration`)
+```
+
+From the summary and tables above, we can see some values below 0 in both datasets, as well as one very large value in the 2004 dataset. We can extract them for closer analysis. 
+
+```{r}
+epa_2004$`Site Name`[epa_2004$`Daily Mean PM2.5 Concentration` == 251]
+epa_2004$`Site Name`[epa_2004$`Daily Mean PM2.5 Concentration` == -0.1]
+
+sum(epa_2019$`Daily Mean PM2.5 Concentration` < 0)
+epa_2019 %>% filter(`Daily Mean PM2.5 Concentration` < 0) %>% count(`Site Name`) %>% arrange(desc(n))
+
+```
+
+When examining the variable of interest specifically (daily mean PM5.2 concentration), there is one observation in the 2004 dataset with a daily mean PM2.5 concentration of -0.1 and one observation with a daily mean PM2.5 concentration of 251. It's impossible to have a negative or zero concentration, and 251 is over two times higher than the next lowest value, which is 170.4. The 251 ug/m3 value was obtained in Yosemite, and the negative value was obtained in Kaiser Wilderness. There are 282 observations in the 2019 dataset with negative values, across many different sites. The site with the most negative values from 2019 is Tahoe City-Fairway Drive with 153 recorded negative values.
+
+Just to verify that these values don't significantly affect the data, we can check how many negative or very high values there are.
+
+```{r}
+filter(epa_2004) %>% summarize(negative = mean(epa_2004$`Daily Mean PM2.5 Concentration` < 0, na.rm = TRUE))
+filter(epa_2019) %>% summarize(negative = mean(epa_2019$`Daily Mean PM2.5 Concentration` < 0, na.rm = TRUE))
+filter(epa_2004) %>% summarize(negative = mean(epa_2004$`Daily Mean PM2.5 Concentration` > 200, na.rm = TRUE))
+
+```
+
+The proportion of negative values is very small in the 2004 dataset. Likewise, the proportion of values over 200 is very small in the 2004 dataset. The proportion of negative values is larger, but still less than 1% in the 2019 dataset. There were no unusually high values in the 2019 dataset. 
+
+
+## Step 2: Combining Both Years of Data into One Dataset
+```{r}
+epa_2004 <- epa_2004 %>% mutate(year = 2004)
+epa_2019 <- epa_2019 %>% mutate(year = 2019)
+
+epa_2004 <- rename(epa_2004, "daily_mean_pm" = "Daily Mean PM2.5 Concentration")
+epa_2019 <- rename(epa_2019, "daily_mean_pm" = "Daily Mean PM2.5 Concentration")
+
+pm_merged <- full_join(epa_2004, epa_2019)
+
+```
+
+The variable "Daily Mean PM2.5 Concentration" was renamed "daily_mean_pm" to make referencing easier. 
+
+```{r}
+nrow(epa_2004) + nrow(epa_2019) == nrow(pm_merged)
+
+```
+The number of rows in the combined dataset does equal the sum of rows in each dataset, so the merge was successful. 
+
+
+## Step 3
+
+We will look at the spatial distribution of the sites by year. A column added to the fully merged dataset denoting if the site was present in only 2004, 2019, or both years will be helpful for this. 
+
+```{r}
+library(leaflet)
+
+pm_merged$year_diff <- ifelse(pm_merged$`Site ID` %in% setdiff(epa_2004$`Site ID`, epa_2019$`Site ID`), "2004 only", ifelse(pm_merged$`Site ID` %in% setdiff(epa_2019$`Site ID`, epa_2004$`Site ID`), "2019 only", "both years"))
+
+pal <- colorFactor(palette = c("green", "red", "blue"), domain = pm_merged$year_diff)
+
+years_map = leaflet(pm_merged) %>%
+  addProviderTiles('CartoDB.Positron') %>% 
+  addCircles(lat=~SITE_LATITUDE,lng=~SITE_LONGITUDE, color = ~pal(year_diff), opacity=1, fillOpacity=1, radius=40) %>% addLegend(position = "topright", pal = pal, values = ~year_diff, title = "Year")
+years_map
+
+```
+
+The points are pretty evenly spread out over the entire state of California with a higher concentration of sites near the coast. However, there are still many sites found in central California and in alpine regions. There are very few sites in the desert region of the state near the borders of Nevada and Arizona. Sites only present in 2004 were not very common in the mountain regions; sites only present in 2019 and sites present in both datasets were more widely distributed throughout the state.
+
+
+## Step 4: Checking for Missing or Implausible Values of PM2.5 Concentration
+
+As found in an earlier section, there are negative and high values present in the data for both years, but their proportions within their respective datasets are quite small. Within the merged dataset, we can verify that this observation still holds true.   
+
+```{r}
+filter(pm_merged) %>% summarize(negative = mean(pm_merged$daily_mean_pm < 0, na.rm = TRUE))
+filter(pm_merged) %>% summarize(high = mean(pm_merged$daily_mean_pm > 200, na.rm = TRUE))
+
+
+```
+
+We can see that the percentage of negative values in the merged dataset is around 0.39%, and the percentage of very high values in the merged dataset is 0.0014%. These implausible values make up only a very small proportion of the merged dataset. 
+
+However, we can still look at the temporal patterns in these values. First, we can look at the year distribution for negative values. From earlier, we know that 1 negative value was present in the 2004 dataset, and 282 were from the 2019 dataset. 
+
+```{r}
+pm_neg = pm_merged[pm_merged$daily_mean_pm < 0, ]
+
+pm_neg %>% count(year) %>% mutate(n/sum(n))
+
+```
+
+In proportions, 0.35% of the negative values came from 2004 and 99.65% cof the negative values came from 2019. We can do something similar at the sites' inclusion in either or both datasets.
+
+```{r}
+sum(pm_neg$year_diff == "2004 only")
+sum(pm_neg$year_diff == "2019 only")
+sum(pm_neg$year_diff == "both years")
+
+pm_neg %>% count(year_diff) %>% mutate(prop = n/sum(n))
+
+```
+
+Looking at the sites' inclusion in both years' datasets, 255 observations came from sites only recorded in 2019, whereas 2 observations came from sites recorded from both years. None came from sites only recorded in 2004. In proportions, 90.11% of the negative values came from sites only recorded in 2019, and 9.89% came from sites recorded in both years.
+
+Now, we can look at the temporal patterns of these implausible values in terms of the month. Since we only have one negative value in the 2004 dataset, we can just print it. Similarly, we can do the same for the one value over 200 in the 2004 dataset.
+
+```{r}
+library(lubridate)
+
+pm_merged$year = as.factor(pm_merged$year)
+pm_merged$Date = as.Date(pm_merged$Date, "%m/%d/%Y")
+
+pm_merged$Date[pm_merged$year == "2004" & pm_merged$daily_mean_pm < 0]
+pm_merged$Date[pm_merged$year == "2004" & pm_merged$daily_mean_pm > 200]
+
+``` 
+
+The negative value in 2004 occured on December 8, 2004. The very high value occured on July 18, 2004. 
+
+However, the 2019 dataset has a lot more negative values than in the 2004 dataset. We can extract those values and look at them more closely.
+```{r}
+negative_2019 <- filter(pm_merged, year == "2019") %>% 
+         mutate(negative = daily_mean_pm < 0, date = ymd(Date)) %>%
+         select(date, negative)
+mutate(negative_2019, month = factor(lubridate::month(negative_2019$date)), levels = month) %>%
+         group_by(month) %>%
+         summarize(pct.negative = mean(negative, na.rm = TRUE) * 100) %>% arrange(desc(pct.negative))
+
+```
+
+We can see that all these values are quite small. Most negative values come from March and April, with 1.16% and 0.94% of March and April observations being negative respectively. We can't be completely sure why they occurred, but since they are a very small proportion of the entire dataset, we can remove them. 
+
+```{r}
+pm_merged_filtered = pm_merged[pm_merged$daily_mean_pm > 0 & pm_merged$daily_mean_pm < 200, ]
+summary(pm_merged_filtered$daily_mean_pm)
+
+```
+The new minimum for the merged dataset's daily mean concentration of PM2.5 is 0.1 ug/m3. The new maximum is 170.4 ug/m3. 
+
+## Step 5
+
+First, let's take a look at PM2.5 levels across the entire state. The data was cleaned so that only sites present in both datasets are used for data visualization; this is see the difference between both years for sites that have data recorded in both 2004 and 2019. 
+
+```{r}
+pm_merged_filtered$year = as.factor(pm_merged_filtered$year)
+pm_merged_filtered$Date = as.Date(pm_merged_filtered$Date, "%m/%d/%Y")
+both_years = pm_merged_filtered[pm_merged_filtered$year_diff == "both years", ]
+both_years %>% ggplot(mapping = aes(x = year, y = daily_mean_pm)) + geom_boxplot() + xlab("Year") + ylab("Daily Mean PM2.5 in ug/m3") 
+
+data_2004 = both_years[both_years$year == "2004", ]
+data_2019 = both_years[both_years$year == "2019", ]
+
+data_2004 %>% ggplot(mapping = aes(x = daily_mean_pm)) + geom_histogram(binwidth = 3) + xlab("Daily Mean PM2.5 in ug/m3") + ylab("Frequency") + ggtitle("Histogram of Daily Mean PM2.5 in 2004")
+data_2019 %>% ggplot(mapping = aes(x = daily_mean_pm)) + geom_histogram(binwidth = 3) + xlab("Daily Mean PM2.5 in ug/m3") + ylab("Frequency") + ggtitle("Histogram of Daily Mean PM2.5 in 2019")
+
+```
+
+From the boxplot, we can see visually that the mean of the daily mean of PM2.5 across the entire state in 2004 is higher than 2019. The first quartile for the daily mean of PM2.5 across the state in 2004 is very similar to the mean of 2019, whereas the third quartile for the daily mean of PM2.5 across the state in 2019 is very similar to the mean of 2004. Furthermore, there is less variation in recorded PM2.5 concentrations in 2019 than in 2004.  
+
+From the histogram, looking at the y axis limits on the 2004 dataset versus the 2019 datset, the range for the 2004 dataset is much smaller with the upper bound of the y axis at around 2500 counts whereas the 2019 dataset has an upper bound of over 10,000 counts. This suggests that the daily PM2.5 values in 2004 have more counts per observed value; in other words, more values appear more times in the 2004 dataset compared to the 2019 dataset. 
+
+Next, looking at the x-axis limits, the x-axis in the 2004 data has a much higher upper bound than the 2019 data; the upper bound for the 2004 data goes past 150, whereas the upper bound for the 2019 data goes a little past 120. The difference in x-axis and y-axis limits validate the boxplots in that there is more variation in the 2004 dataset, which includes higher values of PM2.5 concentration compared to the 2019 dataset. Ultimately, this observation implies that the 2019 dataset has many less high PM2.5 concentration values compared to 2004. 
+
+Now, let's take a look at PM2.5 levels at a county level. We first have to clean out the counties that are present in only 2004 or 2019. 
+```{r}
+county_level <- group_by(both_years, COUNTY, year) %>% summarize(PM = mean(daily_mean_pm, na.rm = TRUE))
+head(county_level)
+tail(county_level)
+
+```
+From just looking at the first 6 rows and the last 6 rows, we can see that for the first 3 and last 3 counties, most daily man PM values have gone down from 2004 to 2019 except for Butte County, where the mean daily PM2.5 has gone up. We can visualize this for all counties using a graph. 
+
+```{r}
+qplot(year, PM, data = mutate(county_level, year = as.numeric(as.character(year))), 
+       color = factor(COUNTY), 
+       geom = c("point", "line"))
+```
+
+Most counties have decreased their PM2.5 levels except for a few. We can check for which counties this has occurred. 
+
+```{r}
+county_unique = as.vector(unique(county_level$COUNTY))
+county_means_2004 = as.vector(county_level$PM[county_level$year == "2004"])
+county_means_2019 = as.vector(county_level$PM[county_level$year == "2019"])
+diff = county_means_2004 - county_means_2019
+diff
+
+```
+
+The diff vector contains all the differences between the mean daily mean PM2.5 in each county from 2004 to 2019. Counties with lower PM2.5 in 2019 will have positive differences; counties with higher PM2.5 in 2019 will have negative differences. We can grab the counties with a negative difference.
+
+```{r}
+county_unique[c(diff < 0)]
+
+```
+We can see that Butte and Mono Counties have had higher PM2.5 levels in 2019 than in 2004. However, for the remaining counties, PM2.5 levels in 2019 have been reduced from 2004. We can find the proportion of counties with increases among all counties examined in both 2004 to 2019. 
+
+```{r}
+county_increase = county_unique[c(diff < 0)]
+length(county_increase)/length(county_unique)
+
+```
+Counties with increases in PM2.5 concentration constitute only 4.65% of all counties. For the majority of counties, on a county-level, PM2.5 concentration has decreased over the last 15 years in California.
+
+Finally, we can examine this at a site level. 
+```{r}
+site_level <- group_by(both_years, `Site ID`, year) %>% summarize(PM = mean(daily_mean_pm, na.rm = TRUE))
+head(site_level)
+tail(site_level)
+
+```
+From just looking at the first 6 rows and the last 6 rows, we can see that for the first 3 and last 3 sites, most daily man PM values have gone down from 2004 to 2019 except for site 60074001, where the mean daily PM2.5 has gone up. We can visualize this for all sites again using a graph. 
+
+```{r}
+qplot(year, PM, data = mutate(site_level, year = as.numeric(as.character(year))), 
+       color = factor(`Site ID`), 
+       geom = c("point", "line"))
+```
+
+Like the county-level map, we can see that most sites saw a decrease in their PM2.5 levels from 2004 to 2019, but there area few which saw increases. We can also extract this using a similar method as for the site level. 
+
+```{r}
+site_unique = as.vector(unique(site_level$`Site ID`))
+site_means_2004 = as.vector(site_level$PM[site_level$year == "2004"])
+site_means_2019 = as.vector(site_level$PM[site_level$year == "2019"])
+site_diff = site_means_2004 - site_means_2019
+site_unique[c(site_diff < 0)]
+
+
+```
+We can see that 4 sites saw increases in PM2.5. We can check their county to see if any of them come from the two counties we extrapolated earlier. 
+
+```{r}
+site_increases = site_unique[c(site_diff < 0)]
+
+unique(both_years$COUNTY[both_years$`Site ID` %in% site_increases])
+length(site_increases)/length(site_unique)
+
+```
+The 4 sites which saw increases were in Butte, Kern, Mono, and Nevada counties. Butte and Mono were two counties that did see a county-level wide increase of PM2.5 from 2004 to 2019. However, sites where PM2.5 concentration increased from 2004 to 2019 represent only 5.13% of all sites present in both datasets. For the majority of sites, on a site-level, PM2.5 concentration has decreased over the last 15 years in California. 

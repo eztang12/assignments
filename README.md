@@ -1,1 +1,1 @@
-This is my first assignment for PM566 containing my R markdown and my HTML file.
+This is my repository containing PM566 assignments.

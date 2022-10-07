@@ -1,0 +1,351 @@
+---
+title: "PM566 Assignment 2"
+author: "Echo Tang"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Wrangling Data
+
+### Step 1: Merging Data
+
+We can merge the data on "townname," as this is the only shared column across both the datasets. 
+
+```{r, message=FALSE}
+setwd("~/pm566/assignments")
+
+library(tidyverse)
+library(data.table)
+
+```
+
+```{r}
+if (!file.exists("chs_individual.csv"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/01_chs/chs_individual.csv",
+    destfile = "chs_individual.csv",
+    method   = "libcurl",
+    timeout  = 60
+    )
+if (!file.exists("chs_regional.csv"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/01_chs/chs_regional.csv",
+    destfile = "chs_regional.csv",
+    method   = "libcurl",
+    timeout  = 60
+    )
+chs_regional = fread("chs_regional.csv")
+chs_indiv = fread("chs_individual.csv")
+```
+
+```{r}
+nrow(chs_regional)
+nrow(chs_indiv)
+chs_merge = merge(x = chs_indiv, y = chs_regional, by.x = "townname",
+    by.y = "townname")
+dim(chs_merge)
+
+```
+
+There are 1200 rows in the individual dataset and in the merged dataset. Since they're equal, this tells us that there are not duplicated observations in the merged dataset. Furthermore, there are 49 columns, which is what we expect.
+
+```{r}
+sum(colSums(is.na(chs_merge)))/(nrow(chs_merge)*ncol(chs_merge))
+
+```
+
+NA values make up around 2.8% of the dataset. This is a very small part of the dataset, which is a good sign for us. However, we do have missing values in BMI, secondhand smoke, gas stove, asthma, and FEV in the dataset, which are our variables of interest. For BMI, FEV, and asthma variables, we can impute them using their respective means within the Hispanic and male variables. 
+
+```{r}
+chs_merge[, bmi_imp := fcoalesce(bmi, mean(bmi, na.rm = TRUE)), by = .(hispanic, male)]
+
+chs_merge[, fev_imp := fcoalesce(fev, mean(fev, na.rm = TRUE)), by = .(hispanic, male)]
+
+chs_merge$asthma = as.double(chs_merge$asthma)
+chs_merge[, asthma_imp := fcoalesce(asthma, mean(asthma, na.rm = TRUE)), by = .(hispanic, male)]
+
+```
+
+We want a four level categorical variable for secondhand smoke and gas exposure, so we need to impute missing values for those variables as well. Since they are boolean variables, I will impute using the most common value. We can find which secondhand smoke and gas stove option are the most common by using the sum() function.
+
+```{r}
+sum(chs_merge$smoke == 1, na.rm = T) 
+sum(chs_merge$smoke == 0, na.rm = T)
+chs_merge[, smoke_imp := fcoalesce(smoke, as.integer(0)), by = .(hispanic, male)]
+
+sum(chs_merge$gasstove == 1, na.rm = T)
+sum(chs_merge$gasstove == 0, na.rm = T)
+chs_merge[, gas_imp := fcoalesce(gasstove, as.integer(1)), by = .(hispanic, male)]
+
+chs_merge = as_tibble(chs_merge)
+
+```
+
+
+### Step 2
+
+We can create an obesity level categorical variable to investigate our research question.
+
+```{r}
+chs_merge = chs_merge %>% 
+  mutate(obesity_level = ifelse(
+    chs_merge$bmi_imp < 14, 'Underweight', ifelse(
+      chs_merge$bmi_imp >= 14 & chs_merge$bmi_imp < 22, 'Normal', ifelse(
+        chs_merge$bmi_imp >= 22 & chs_merge$bmi_imp <= 24, 'Overweight', 'Obese'
+        )
+      )  
+    )
+  )
+
+chs_merge$obesity_level = as.factor(chs_merge$obesity_level)
+
+obesity_summ = chs_merge %>% 
+  group_by(obesity_level) %>% 
+  summarise(min = min(bmi_imp), 
+            max = max(bmi_imp), 
+            count = n())
+
+knitr::kable(obesity_summ)
+
+```
+
+There are 975 individuals in the normal category, 103 in the obese, 87 in the overweight, and 35 in the underweight. Added together, this is 1200, meaning that all observations were accounted for. The minimum and maximum of each obesity level also follow the cut-off values accordingly. 
+
+### Step 3
+
+We can also create a categorical variable for smoke and gas exposure to investigate the research question.
+
+```{r}
+chs_merge = chs_merge %>% 
+  mutate(smoke_gas_exposure = ifelse(
+    chs_merge$smoke_imp == 0 & chs_merge$gas_imp == 0, 'Neither', ifelse(
+      chs_merge$smoke_imp == 0 & chs_merge$gas_imp == 1, 'Gas stove only', ifelse(
+        chs_merge$smoke_imp == 1 & chs_merge$gas_imp == 0, 'Second-hand smoke only', 'Both'
+      )  
+    )
+  )
+)
+
+chs_merge$smoke_gas_exposure = as.factor(chs_merge$smoke_gas_exposure)
+
+```
+
+### Step 4
+
+Below are four summary tables showing the mean FEV and asthma frequency (as a proportion) stratified by town name, sex, obesity level, and smoke/gas exposure. Summaries include the mean and standard deviation of FEV, the mean asthma frequency as a proportion, and sample size per categorical variable. 
+
+```{r}
+
+# By town
+town_summ = chs_merge %>% 
+  group_by(townname) %>% 
+  summarize(mean_fev = mean(fev_imp), 
+            sd_fev = sd(fev_imp), 
+            mean_asthma = mean(asthma_imp), 
+            count = n())
+
+knitr::kable(town_summ)
+  
+# By sex
+sex_summ = chs_merge %>% 
+  group_by(male) %>% 
+  summarize(mean_fev = mean(fev_imp), 
+            sd_fev = sd(fev_imp), 
+            mean_asthma = mean(asthma_imp), 
+            count = n())
+
+knitr::kable(sex_summ)
+
+# By obesity level
+bmi_summ = chs_merge %>% 
+  group_by(obesity_level) %>% 
+  summarize(mean_fev = mean(fev_imp), 
+            sd_fev = sd(fev_imp), 
+            mean_asthma = mean(asthma_imp), 
+            count = n())
+
+knitr::kable(bmi_summ)
+
+# By smoke and gas exposure
+smoke_summ = chs_merge %>% 
+  group_by(smoke_gas_exposure) %>% 
+  summarize(mean_fev = mean(fev_imp), 
+            sd_fev = sd(fev_imp), 
+            mean_asthma = mean(asthma_imp), 
+            count = n())
+
+knitr::kable(smoke_summ)
+
+```
+
+
+## Looking at Data
+
+#### Check dimensions 
+```{r}
+dim(chs_merge)
+
+```
+The merged dataset has 1200 observations and 56 variables. The added 7 variables are from the FEV, BMI, asthma, second-hand smoke, and gas stove imputed variables along with the obesity level and smoke/gas exposure factor variables. 
+
+
+#### Check headers and footers, column names
+```{r}
+head(chs_merge) %>% knitr::kable()
+tail(chs_merge) %>% knitr::kable()
+colnames(chs_merge)
+
+```
+
+#### Check variable types
+```{r}
+str(chs_merge)
+summary(chs_merge)
+
+```
+
+From the summary, we can see that the imputed variables, all denoted with *_imp, have no more NA values. Accordingly, the categorical variables obesity_level and smoke_gas_exposure using columns with imputed data have no NA values, signifying that the data was imputed correctly. We can also see that our other variable of interest, pm25_mass, has no missing values. 
+
+#### Check variables of interest
+```{r}
+table(chs_merge$bmi_imp)
+summary(chs_merge$bmi_imp)
+
+table(chs_merge$obesity_level)
+summary(chs_merge$obesity_level)
+
+table(chs_merge$fev_imp)
+summary(chs_merge$fev_imp)
+
+table(chs_merge$smoke_gas_exposure)
+summary(chs_merge$smoke_gas_exposure)
+
+table(chs_merge$pm25_mass)
+summary(chs_merge$pm25_mass)
+
+```
+
+We can see that an overwhelming majority of study participants are of normal BMI, with two BMIs of over 40. We can see that each unique PM2.5 mass value appears 100 times each, suggesting that each town has a different level of PM2.5 mass. Furthermore, we can see that the overwhelming majority of participants have only a gas stove, but no secondhand smoke exposure. Lastly, we can see that the maximum FEV is almost exactly 1000 units higher than the third quartile. We can extract some of these observations for further analysis. 
+
+```{r}
+chs_merge$townname[chs_merge$bmi_imp > 40]
+
+```
+
+We can see that both of these very high BMIs come from Riverside. There doesn't seem to be information correlating this location with high BMI, but this is just an observation from this data in particular. Next, let's look at FEV and PM2.5 mass and their distributions. 
+
+```{r}
+pm25_mass_unq = unique(chs_merge$pm25_mass)
+
+hist(pm25_mass_unq)
+hist(chs_merge$fev_imp)
+
+```
+
+From these histograms, we can see that the FEV values are normally distributed, so we can proceed with the FEV data. However, the histogram for PM2.5 mass is not normally distributed, with most PM2.5 values being low from 5-10. Validating with information online, PM2.5 mass usually varies between 5 and 35, given the levels are not dangerous. This corroborates what the table() function and histogram shows us, so we can proceed with the PM2.5 mass data as well. 
+
+
+### Visualization
+
+##### Facet scatter plots of BMI vs. FEV
+
+```{r, message=FALSE, warning=FALSE}
+chs_merge %>% ggplot(mapping = aes(x = fev_imp, y = bmi_imp, color = townname)) + geom_point() + geom_smooth(method = lm, color = "red") + facet_wrap(~ townname) + xlab("FEV") + ylab("BMI") + ggtitle("BMI vs. FEV by Town Name")
+
+```
+
+From the facet scatter plots with regression lines, there aren't any glaring differences in the relationship between FEV and BMI based on town. Overall, there is a positive relationship between FEV and BMI observed across all cities. We can see, however, that Lancaster displays the highest variation in FEV ocmpared to the other cities in this dataset. Out of these cities, Lake Elsinore and Long Beach seem to have the most positive correlation between FEV and BMI. This suggests that the relationship between FEV and BMI may differ by region.
+
+##### Stacked Histograms
+```{r, message=FALSE, warning=FALSE}
+chs_merge %>% ggplot(mapping = aes(x = fev_imp, fill = obesity_level)) + geom_histogram() + scale_fill_brewer(palette="Spectral") + xlab('FEV') + ylab("Frequency") + guides(fill = guide_legend(title = "Obesity Category")) + ggtitle("Histogram of FEV by Obesity Level")
+
+chs_merge %>% ggplot(mapping = aes(x = fev_imp, fill = smoke_gas_exposure)) + geom_histogram() + scale_fill_brewer(palette="Spectral") + xlab('FEV') + ylab("Frequency") + guides(fill = guide_legend(title = "Smoke/Gas Exposure")) + ggtitle("Histogram of FEV by Smoke/Gas Exposure")
+
+```
+
+We can see here that the distribution of FEV is shifted based on obesity level. All obesity levels' FEV distributions look relatively normal, but centered at different values. The "normal" BMI is centered at around an FEV of 1800-2100, whereas the "underweight" group's FEV has most of its values between 1500-2000. However, it is important to note that the underweight category had the least observations, which can also affect its distribution in this dataset. On the other hand, both the obese and overweight groups' FEV distributions are centered around 2000-2500. From this stacked histogram, we can see that there are some differences between each obesity group's corresponding FEV distributions. 
+
+On the other hand, the distributions for all the smoke and gas exposure groups seem to be overlapping. Similarly, though they do also follow normal distributions, we don't see as much of a difference in where these distributions are centered based on their smoke and gas exposure. From this stacked histogram, there isn't very compelling evidence that FEV differs based on smoke and gas exposure.
+
+#### Stacked Bar Graph
+
+```{r, message=FALSE}
+chs_merge %>% ggplot(mapping = aes(x = obesity_level, fill = smoke_gas_exposure)) + geom_bar(position = "dodge") + scale_fill_brewer(palette="Spectral") + xlab("Obesity Level") + ggtitle("BMI by Smoke/Gas Exposure") + guides(fill = guide_legend(title = "Smoke/Gas Exposure"))
+```
+
+Based on the stacked bar graph, the proportion of people with the different levels of exposure to smoke and gas do not differ much based on obesity level. Most people per obesity level have exposure to a gas stove whereas the lowest proportion of people in each obesity category have exposure to second hand smoke only. From this plot alone, there is no evidence that obesity level varies by smoke or gas exposure, as the distribution of smoke and gas exposures seems consistent across obesity groups.
+
+
+#### Summary Graphs
+```{r}
+chs_merge %>% ggplot(mapping = aes(x = bmi_imp, y = fev_imp)) + geom_point() + geom_smooth(method = lm) + xlab("BMI") + ylab("FEV") + ggtitle("BMI vs. FEV Across All Cities")
+
+fev_bmi = chs_merge %>% group_by(obesity_level) 
+chs_merge %>% ggplot() + stat_summary(mapping = aes(x = obesity_level, y = fev_imp, color = obesity_level), fun.min = min, fun.max = max, fun = mean, na.rm = TRUE) + xlab("Obesity level") + ylab("FEV") + ggtitle("Summary of FEV by Obesity Category")
+
+
+```
+
+From the scatterplot with regression line, we can see that overall, FEV does exhibit a positive relationship with BMI. This is expected, as we have seen this trend when stratified by town. On the other hand, with the bar chart, we can see that the mean FEV does have some differences among obesity groups. Although the mean FEV is very similar in the obese and overweight groups, it is quite different from the normal and underweight groups. The mean FEV of the obese and overweight group are both about 2500, whereas the mean FEV of the normal weight group is approximately 2000. On the other hand, the mean FEV of the underweight group is less than 1750. This suggests that the mean FEV does have a relationship with obesity level; though mean FEV doesn't seem to differ as much between the obese and overweight groups, we can see that the normal, underweight, and the obese + overweight groups do have different mean FEVs. It is important to note, however, that out of all the groups, the normal category has the largest distribution of FEV values; however, we can see that the mean is still different between the other obesity levels.
+
+
+```{r}
+fev_gas = chs_merge %>% group_by(smoke_gas_exposure) 
+fev_gas %>% ggplot() + stat_summary(mapping = aes(x = smoke_gas_exposure, y = fev_imp, color = smoke_gas_exposure), fun.min = min, fun.max = max, fun = mean, na.rm = TRUE) + xlab("Smoke/Gas Exposure") + ylab("FEV") + ggtitle("Summary of FEV by Smoke/Gas Exposure")
+
+```
+
+Contrasting the relationship between BMI and mean FEV, the smoke and gas exposure does not seem to have a big effect on mean FEV. As demonstrated by the bar graph, the mean FEV between all groups are around 2000. However, the distributions differ across groups; the distribution of FEV for those with both exposures and second-hand smoke only is much smaller compared to the gas stove only and neither exposures groups. 
+
+#### Leaflet Map
+We can visualize PM2.5 mass based on location. 
+
+```{r}
+library(leaflet)
+pm.pal = colorNumeric(c('darkgreen', 'goldenrod', 'brown'), domain = chs_merge$pm25_mass)
+
+pm_map <- leaflet(chs_merge) %>% 
+  addProviderTiles('CartoDB.Positron') %>% 
+  addCircles(
+    lat = ~lat, lng = ~lon,
+    label = ~paste0(pm25_mass), color = ~ pm.pal(pm25_mass),
+    opacity = 1, fillOpacity = 1, radius = 50
+    ) %>%
+  addLegend('bottomleft', pal=pm.pal, values=chs_merge$pm25_mass,
+          title='PM2.5 Mass', opacity=1)
+
+pm_map
+
+```
+
+We can see that the site with the highest PM2.5 mass is one of the more eastern sites. We can extract this value. 
+
+```{r}
+unique(chs_merge$townname[chs_merge$pm25_mass == max(chs_merge$pm25_mass)])
+
+```
+
+Mira Loma has the highest PM2.5 mass in this dataset. With validation for the Internet, Mira Loma is one of the most polluted cities in Southern California in terms of PM2.5 pollution due to its proximity to the Ontario Freeway. This is supported by the data from this dataset. 
+
+```{r}
+
+unique(chs_merge$townname[chs_merge$pm25_mass > mean(chs_merge$pm25_mass)])
+```
+
+Other cities with higher than average PM2.5 mass are Long Beach, Riverside, San Dimas, and Upland. Similarly to Mira Loma, these cities are near freeways. Long Beach, in particular, is a very busy port city, which can also contribute to its higher PM2.5 mass. The other sites with lower PM2.5 values are nearer to the coast or further inland, away from urban centers with a lot of automobile traffic.
+
+Lastly, let's visualize if FEV and PM2.5 mass are related or not. We can use a scatterplot to see this relationship since FEV and PM2.5 mass are both continuous variables.
+
+```{r}
+chs_merge %>% ggplot(mapping = aes(x = pm25_mass, y = fev_imp)) + geom_jitter() + geom_smooth(method = lm) + xlab("PM2.5 Mass") + ylab("FEV") + ggtitle("FEV vs. PM2.5 Mass")
+
+```
+
+We can see there is a slight negative relationship with FEV and PM2.5 mass.

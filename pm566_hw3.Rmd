@@ -1,0 +1,145 @@
+---
+title: "PM566 Assignment 3"
+author: "Echo Tang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(stringr)
+library(httr)
+library(xml2)
+library(rvest)
+library(tidyverse)
+library(data.table)
+```
+
+## APIs
+
+```{r}
+website <- xml2::read_html("https://pubmed.ncbi.nlm.nih.gov/?term=sars-cov-2+trial+vaccine")
+
+counts <- xml2::xml_find_first(website, "/html/body/main/div[9]/div[2]/div[2]/div[1]/div[1]/span")
+
+counts <- as.character(counts)
+
+stringr::str_extract(counts, "([0-9]+[.,]*)+")
+```
+As of Nov. 4, there are 4009 results for "sars-cov-2 trial vaccine." 
+
+### Getting query IDs and downloading details
+```{r}
+query_ids <- GET(
+  url   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+  query = list(
+    db      = "pubmed",
+    term    = "sars-cov-2 trial vaccine",
+    retmax  = 250
+  ), 
+)
+
+ids <- httr::content(query_ids)
+ids <- as.character(ids)
+ids <- stringr::str_extract_all(ids, "<Id>[[:digit:]]+</Id>")[[1]]
+ids <- stringr::str_remove_all(ids, "</?Id>")
+
+publications <- GET(
+  url   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+  query = list(
+    db = "pubmed",
+    id = paste(ids, collapse = ","),
+    retmax = 250,
+    rettype = "abstract"
+    )
+)
+
+publications <- httr::content(publications)
+
+pub_char_list <- xml2::xml_children(publications)
+pub_char_list <- sapply(pub_char_list, as.character)
+
+```
+
+### Form a database from publication details
+```{r}
+abstracts <- str_extract(pub_char_list, "<Abstract>[[:print:][:space:]]+</Abstract>")
+abstracts <- str_remove_all(abstracts, "</?[[:alnum:]- =\"]+>") 
+abstracts <- str_replace_all(abstracts, "[[:space:]]+"," ")
+
+titles <- str_extract(pub_char_list, "<ArticleTitle>.*</ArticleTitle>")
+titles <- str_replace_all(titles, "</?[[:alpha:]]+>", "")
+
+journals <- str_extract(pub_char_list, "<Title>.*</Title>")
+journals = str_remove_all(journals, "</?[:alpha:]+>")
+
+dates <- str_remove_all(pub_char_list, "\\n") %>% str_extract("<PubDate>.*</PubDate>") %>% str_squish()
+dates = str_remove_all(dates, "</?[:alpha:]+>") %>% str_trim(side = "both")
+
+database <- data.frame(
+  PubMedId = ids,
+  Title    = titles,
+  Abstract = abstracts,
+  Journal = journals,
+  PubDate = dates
+) 
+
+knitr::kable(database[1:5,], caption = "Database of SARS-COV-2 Trial Vaccine Papers")
+```
+
+## Text Mining
+```{r}
+if (!file.exists("pubmed.csv"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/03_pubmed/pubmed.csv",
+    destfile = "pubmed.csv",
+    method   = "libcurl",
+    timeout  = 60
+    )
+pubmed = fread("pubmed.csv")
+pubmed %>% count(term) %>% arrange(desc(n)) %>% knitr::kable()
+
+```
+
+The most abstracts are about COVID, with 981 abstracts falling under this term. The next most common terms were prostate cancer and preeclampsia at 787 and 780 abstracts respectively, followed by cystic fibrosis and meningitis. 
+
+### Tokenize the abstracts
+```{r}
+library(tidytext)
+
+pubmed %>% unnest_tokens(token, abstract) %>% count(token, sort=T) %>% top_n(20) %>% knitr::kable()
+```
+
+Most of the top 20 most common words are stop words, except for "covid," "19," "patients," "cancer," and "prostate." COVID and prostate cancer are the two most popular terms for the abstracts, which makes sense why they appear very commonly. Patients also appears a lot, which also makes sense considering all the terms that the abstracts fall under are medical conditions.
+
+```{r}
+all_token = pubmed %>% unnest_tokens(token, abstract) %>% count(token, sort=T)
+all_token %>% anti_join(stop_words, by = c("token" = "word")) %>% filter(!grepl(pattern = "^[0-9]+$", x = token)) %>% top_n(5) %>% knitr::kable()
+```
+
+After removing stop words and numbers, the top 5 words are the only five non-stop words from the top 20 list generated earlier -- "covid," "patients," "cancer," "prostate," and "disease." 
+
+### Tokenizing into bigrams
+```{r}
+bigrams = pubmed %>% unnest_ngrams(ngram, abstract, n = 2) %>% count(ngram, sort=T)
+bigrams %>% top_n(10) %>% ggplot(aes(x = n, y = fct_reorder(ngram, n))) + geom_col() + ylab("Top 10 Most Common Bigrams") + xlab("Number of Appearances")
+```
+
+The most frequently appearing bigram was "covid 19" with almost seven thousand appearances, which again makes sense given that COVID 19 makes up the most abstracts in this dataset. Interestingly, this was far more frequent than the next to most popular bigrams "of the" and "in the," which consist only of stop words. The next most common bigrams after those three are "prostate cancer" and "pre eclampsia," which similarly to COVID 19, are search terms. Other common bigrams include "patients with," "of covid," and "of prostate," which incorporates search terms with stop words. 
+
+### Calculating TF-IDF 
+
+```{r}
+pubmed_tokens = pubmed %>% unnest_tokens(token, abstract) %>% count(term, token, sort = TRUE)
+
+pubmed_tokens %>% bind_tf_idf(token, term, n) %>% arrange(desc(tf_idf)) %>% top_n(5) %>% select(term, token, n, tf_idf) %>% knitr::kable()
+```
+
+The top 5 TF-IDF words were "covid," "prostate," "eclampsia," "preeclampsia," and "meningitis." 
+
+"covid" and "prostate" were shared with what was gotten in number 1, but "cancer" and "disease" are not in the top 5 TF-IDF terms. Instead, "eclampsia," "preeclampsia," and "meningitis" are in the top 5 TF-IDF tokens; this also makes sense because preeclampsia and meningitis are two of the five terms that the abstracts fall under. Interestingly, neither "cystic" nor "fibrosis" appear in the top 5 TF-IDF words even though it is one of the five terms. 
+
+

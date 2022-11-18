@@ -1,0 +1,154 @@
+---
+title: "PM566 Assignment 4"
+author: "Echo Tang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## HPC
+
+### Problem 1 - Making Code Nicer
+```{r}
+fun1 <- function(mat) {
+  n <- nrow(mat)
+  ans <- double(n) 
+  for (i in 1:n) {
+    ans[i] <- sum(mat[i, ])
+  }
+  ans
+}
+
+fun1alt <- function(mat) {
+  ans = rowSums(mat)
+  ans
+}
+
+
+fun2 <- function(mat) {
+  n <- nrow(mat)
+  k <- ncol(mat)
+  ans <- mat
+  for (i in 1:n) {
+    for (j in 2:k) {
+      ans[i,j] <- mat[i, j] + ans[i, j - 1]
+    }
+  }
+  ans
+}
+
+
+
+fun2alt <- function(mat) {
+  ans = matrix(nrow = nrow(mat), ncol = ncol(mat))
+  for(i in 1:nrow(mat)){
+    temp = mat[i, ]
+    ans[i, ] = cumsum(temp)
+  }
+  ans
+}
+
+# Use the data with this code
+set.seed(2315)
+dat <- matrix(rnorm(200 * 100), nrow = 200)
+
+# Test for the first
+microbenchmark::microbenchmark(
+  fun1(dat),
+  fun1alt(dat), unit =  "ms", check = "equivalent"
+)
+
+
+# Test for the second
+microbenchmark::microbenchmark(
+  fun2(dat),
+  fun2alt(dat), unit = "ms", check = "equivalent"
+)
+```
+
+### Problem 2 - Make things run faster with parallel computing
+```{r}
+sim_pi <- function(n = 1000, i = NULL) {
+  p <- matrix(runif(n*2), ncol = 2)
+  mean(rowSums(p^2) < 1) * 4
+}
+
+set.seed(1231)
+system.time({
+  ans <- unlist(lapply(1:4000, sim_pi, n = 10000))
+  print(mean(ans))
+})
+
+system.time({
+  # YOUR CODE HERE
+  cl <- parallel::makePSOCKcluster(4)
+  parallel::clusterSetRNGStream(cl, 1231)
+  parallel::clusterExport(cl, c("sim_pi"), envir=environment())
+  ans <- unlist(parallel::parLapply(cl, 1:4000, sim_pi, n = 10000))
+  print(mean(ans))
+  # YOUR CODE HERE
+  
+})
+```
+
+## SQL
+```{r}
+library(RSQLite)
+library(DBI)
+
+con <- dbConnect(SQLite(), ":memory:")
+
+film <- read.csv("https://raw.githubusercontent.com/ivanceras/sakila/master/csv-sakila-db/film.csv")
+film_category <- read.csv("https://raw.githubusercontent.com/ivanceras/sakila/master/csv-sakila-db/film_category.csv")
+category <- read.csv("https://raw.githubusercontent.com/ivanceras/sakila/master/csv-sakila-db/category.csv")
+
+dbWriteTable(con, "film", film)
+dbWriteTable(con, "film_category", film_category)
+dbWriteTable(con, "category", category)
+
+```
+
+### Question 1
+```{sql, connection = con}
+SELECT rating, COUNT(rating) as count
+FROM film
+GROUP BY rating
+ORDER by count
+
+```
+
+
+### Question 2
+```{sql, connection = con}
+SELECT rating, AVG(replacement_cost) as avg_rep, AVG(rental_rate) as avg_ren
+FROM film
+GROUP BY rating
+
+```
+
+The average replacement cost and rental rate for G rated movies are 20.12 and 2.91 respectively. The average replacement cost and rental rate for NC-17 movies are 20.13 and 2.97 respectively. The average replacement cost and rental rate for PG rated movies are 18.96 and 3.05 respectively. The average replacement cost and rental rate for PG-13 rated movies are 20.40 and 3.03 respectively. The average replacement cost and rental rate for R rated movies are 20.23 and 2.94 respectively.
+
+### Question 3
+```{sql, connection = con}
+SELECT category_id, COUNT(b.film_id) as count
+FROM film AS a
+  INNER JOIN film_category AS b
+  ON a.film_id = b.film_id
+GROUP BY category_id
+
+```
+
+### Question 4
+```{sql, connection = con}
+SELECT a.category_id, COUNT(a.film_id) as count, name
+FROM film_category AS a
+  INNER JOIN category AS b
+  ON a.category_id = b.category_id
+GROUP BY name
+ORDER BY count DESC
+```
+
+The Sports category has the most films with 74 films, followed by Foreign, which has 73 films. 
